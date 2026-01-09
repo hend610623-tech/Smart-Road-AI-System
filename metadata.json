@@ -1,0 +1,8 @@
+{
+  "name": "Smart Road Assistant",
+  "description": "An AI-powered road assistant that provides smart routing, real-time voice conversations, and automated system control via Google Apps Script integration.",
+  "requestFramePermissions": [
+    "microphone",
+    "geolocation"
+  ]
+}
