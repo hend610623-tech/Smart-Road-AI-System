@@ -1,176 +1,127 @@
 
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useImperativeHandle, forwardRef } from 'react';
 import { LiveServerMessage } from "@google/genai";
 import { ChatMessage, Coordinates } from '../types';
 import * as geminiService from '../services/geminiService';
 import { decode, decodeAudioData } from '../utils/audio';
-import { MicIcon, LoaderIcon, BoltIcon, MapIcon } from './Icons';
+import { MicIcon, LoaderIcon, BoltIcon, SparklesIcon } from './Icons';
 
-const LiveAssistant: React.FC = () => {
+export interface LiveAssistantHandle {
+  remoteStart: () => void;
+}
+
+const LiveAssistant = forwardRef<LiveAssistantHandle, {}>((props, ref) => {
   const [isListening, setIsListening] = useState(false);
-  const [conversation, setConversation] = useState<ChatMessage[]>([]);
-  const [currentLocation, setCurrentLocation] = useState<Coordinates | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [status, setStatus] = useState('Ready for your command.');
-  const [liveTranscription, setLiveTranscription] = useState('');
+  const [isAutoSync, setIsAutoSync] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
-  const [isMapConsulting, setIsMapConsulting] = useState(false);
+  const [isConnecting, setIsConnecting] = useState(false);
 
   const sessionPromiseRef = useRef<Promise<any> | null>(null);
   const inputAudioContextRef = useRef<AudioContext | null>(null);
   const outputAudioContextRef = useRef<AudioContext | null>(null);
+  const gainNodeRef = useRef<GainNode | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
-
-  const currentInputTranscriptionRef = useRef('');
-  const currentOutputTranscriptionRef = useRef('');
-  const nextStartTimeRef = useRef(0);
   const audioSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
-  const conversationEndRef = useRef<HTMLDivElement>(null);
+  const nextStartTimeRef = useRef(0);
+  const syncIntervalRef = useRef<number | null>(null);
 
-  useEffect(() => {
-    conversationEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [conversation]);
-
-  const addMessage = useCallback((sender: 'user' | 'ai' | 'system', text: string, metadata?: any) => {
-    setConversation(prev => [...prev, { sender, text, timestamp: new Date().toISOString(), metadata }]);
-  }, []);
+  const broadcastThought = (text: string, type: 'info' | 'success' | 'warning' = 'info') => {
+    window.dispatchEvent(new CustomEvent('ai-thought-stream', { 
+      detail: { text, type, timestamp: new Date().toLocaleTimeString() } 
+    }));
+  };
 
   const stopEverything = useCallback(() => {
     setIsListening(false);
+    setIsAutoSync(false);
+    setIsConnecting(false);
+    if (syncIntervalRef.current) clearInterval(syncIntervalRef.current);
+    
     if (sessionPromiseRef.current) {
-      sessionPromiseRef.current.then(session => session.close()).catch(console.error);
+      sessionPromiseRef.current.then(session => session.close()).catch(() => {});
       sessionPromiseRef.current = null;
     }
     mediaStreamRef.current?.getTracks().forEach(track => track.stop());
-    mediaStreamRef.current = null;
     scriptProcessorRef.current?.disconnect();
-    scriptProcessorRef.current = null;
-    inputAudioContextRef.current?.close().catch(console.error);
-    inputAudioContextRef.current = null;
-    outputAudioContextRef.current?.close().catch(console.error);
-    outputAudioContextRef.current = null;
+    gainNodeRef.current?.disconnect();
+    inputAudioContextRef.current?.close().catch(() => {});
+    outputAudioContextRef.current?.close().catch(() => {});
     audioSourcesRef.current.forEach(source => source.stop());
     audioSourcesRef.current.clear();
-    nextStartTimeRef.current = 0;
-    setLiveTranscription('');
-    setStatus('Ready.');
+    
+    broadcastThought("Audio Stream Terminated", "warning");
   }, []);
-  
-  const handleRouteRequest = useCallback(async (destination: string) => {
-    if (!currentLocation) {
-        addMessage('system', 'GPS signal needed for routing.');
-        return;
-    }
-    addMessage('system', `Calculating best route to ${destination}...`);
+
+  const runLogicCycle = useCallback(async () => {
+    if (!sessionPromiseRef.current) return;
     try {
-        const response = await geminiService.getRoute(currentLocation, destination);
-        addMessage('ai', response.text, { grounding: response.candidates?.[0]?.groundingMetadata?.groundingChunks });
+      const session = await sessionPromiseRef.current;
+      session.sendRealtimeInput({
+        text: "Perform background scan of infrastructure parameters B-H."
+      });
     } catch (e) {
-        addMessage('system', 'Connectivity lost.');
+      console.error("Logic cycle failed", e);
     }
-}, [currentLocation, addMessage]);
+  }, []);
 
   const startSession = async () => {
-    setError(null);
-    setLiveTranscription('');
-    setStatus('Activating...');
+    if (isConnecting || isListening) return;
+    setIsConnecting(true);
     try {
-      mediaStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const position = await new Promise<GeolocationPosition>((resolve, reject) => {
-          navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true });
+      broadcastThought("Activating High-Sensitivity Mic...");
+      mediaStreamRef.current = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: false, // Turn off noise suppression to catch fainter sounds
+          autoGainControl: true
+        } 
       });
-      const coords = { latitude: position.coords.latitude, longitude: position.coords.longitude };
-      setCurrentLocation(coords);
       
-      inputAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
-      outputAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
-
-      setIsListening(true);
-      setStatus('Online');
+      inputAudioContextRef.current = new AudioContext({ sampleRate: 16000 });
+      outputAudioContextRef.current = new AudioContext({ sampleRate: 24000 });
+      
+      // Add a Gain Node to amplify the signal before sending to Gemini
+      gainNodeRef.current = inputAudioContextRef.current.createGain();
+      gainNodeRef.current.gain.value = 3.0; // 300% volume boost for high sensitivity
+      
+      broadcastThought("Neural Connection Opening...");
 
       sessionPromiseRef.current = geminiService.connectToLive({
         onopen: () => {
+            setIsListening(true);
+            setIsConnecting(false);
+            setIsAutoSync(true);
+            broadcastThought("Hyper-Sensitive Audio Active", "success");
+            
             const source = inputAudioContextRef.current!.createMediaStreamSource(mediaStreamRef.current!);
             scriptProcessorRef.current = inputAudioContextRef.current!.createScriptProcessor(4096, 1, 1);
+            
             scriptProcessorRef.current.onaudioprocess = (e) => {
                 const inputData = e.inputBuffer.getChannelData(0);
                 const pcmBlob = geminiService.createPcmBlob(inputData);
-                sessionPromiseRef.current?.then((session) => session.sendRealtimeInput({ media: pcmBlob }));
+                sessionPromiseRef.current?.then(session => session.sendRealtimeInput({ media: pcmBlob }));
             };
-            source.connect(scriptProcessorRef.current);
+
+            // Chain: Source -> Gain (Boost) -> Processor -> Destination
+            source.connect(gainNodeRef.current!);
+            gainNodeRef.current!.connect(scriptProcessorRef.current);
             scriptProcessorRef.current.connect(inputAudioContextRef.current!.destination);
+            
+            runLogicCycle();
         },
         onmessage: async (message: LiveServerMessage) => {
             if (message.toolCall) {
               for (const fc of message.toolCall.functionCalls) {
-                // Fetch Telemetry (b, c, d, e, f, g, h)
-                if (fc.name === 'getInfrastructureTelemetry') {
+                if (fc.name === 'treatSpreadsheet') {
                   setIsSyncing(true);
-                  const telemetry = await geminiService.getInfrastructureData();
-                  setIsSyncing(false);
-                  sessionPromiseRef.current?.then(session => {
-                    session.sendToolResponse({
-                      functionResponses: { id: fc.id, name: fc.name, response: { telemetry } }
-                    });
-                  });
-                }
-                
-                // Execute Binary GPIO Logic
-                if (fc.name === 'sendGpioOrders') {
-                  setIsSyncing(true);
-                  const sig1 = fc.args.sig1 as number;
-                  const sig2 = fc.args.sig2 as number;
-                  const sig3 = fc.args.sig3 as number;
-                  const logicSummary = fc.args.logicSummary as string;
-                  const result = await geminiService.executeGpioOrders(sig1, sig2, sig3, logicSummary);
-                  setTimeout(() => setIsSyncing(false), 1500);
-                  sessionPromiseRef.current?.then(session => {
-                    session.sendToolResponse({
-                      functionResponses: { id: fc.id, name: fc.name, response: { result } }
-                    });
-                  });
-                }
-                
-                // Maps Traffic Check
-                if (fc.name === 'checkLocalTraffic') {
-                    setIsMapConsulting(true);
-                    const location = fc.args.location as string;
-                    const trafficInfo = await geminiService.getTrafficStatus(location, coords);
-                    setIsMapConsulting(false);
-                    sessionPromiseRef.current?.then(session => {
-                        session.sendToolResponse({
-                            functionResponses: { id: fc.id, name: fc.name, response: { trafficStatus: trafficInfo } }
-                        });
-                    });
+                  await geminiService.treatSpreadsheet(fc.args as any);
+                  setTimeout(() => setIsSyncing(false), 500);
+                  sessionPromiseRef.current?.then(s => s.sendToolResponse({ functionResponses: { id: fc.id, name: fc.name, response: { result: "OK" } } }));
                 }
               }
             }
-
-            if (message.serverContent?.inputTranscription) {
-                currentInputTranscriptionRef.current += message.serverContent.inputTranscription.text;
-                setLiveTranscription(currentInputTranscriptionRef.current);
-            }
-            if (message.serverContent?.outputTranscription) {
-                currentOutputTranscriptionRef.current += message.serverContent.outputTranscription.text;
-            }
-            if (message.serverContent?.turnComplete) {
-                const fullInput = currentInputTranscriptionRef.current.trim();
-                const fullOutput = currentOutputTranscriptionRef.current.trim();
-                if(fullInput) addMessage('user', fullInput);
-                if(fullOutput) addMessage('ai', fullOutput);
-                
-                const routeKeywords = ['to', 'route', 'go', 'navigate', 'direction'];
-                if (routeKeywords.some(kw => fullInput.toLowerCase().includes(kw))) {
-                    const destination = fullInput.toLowerCase().replace(/.*(to|directions to)\s+/i, '').trim();
-                    if(destination.length > 2) handleRouteRequest(destination);
-                }
-                
-                currentInputTranscriptionRef.current = '';
-                currentOutputTranscriptionRef.current = '';
-                setLiveTranscription('');
-            }
-
+            
             const base64Audio = message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
             if (base64Audio) {
                 const audioBuffer = await decodeAudioData(decode(base64Audio), outputAudioContextRef.current!, 24000, 1);
@@ -181,90 +132,109 @@ const LiveAssistant: React.FC = () => {
                 source.start(startTime);
                 nextStartTimeRef.current = startTime + audioBuffer.duration;
                 audioSourcesRef.current.add(source);
-                source.onended = () => audioSourcesRef.current.delete(source);
-            }
-            
-            if (message.serverContent?.interrupted) {
-                audioSourcesRef.current.forEach(s => s.stop());
-                audioSourcesRef.current.clear();
-                nextStartTimeRef.current = 0;
             }
         },
         onerror: (e) => {
-            setError('Connection fault.');
-            stopEverything();
+          broadcastThought("Link Error", "warning");
+          stopEverything();
         },
-        onclose: () => stopEverything(),
+        onclose: () => {
+          stopEverything();
+        },
       });
-    } catch (err: any) {
-      setError('System fault.');
-      stopEverything();
+    } catch (e) { 
+      broadcastThought("Permission Denied", "warning");
+      stopEverything(); 
     }
   };
 
-  const toggleListening = () => isListening ? stopEverything() : startSession();
+  useEffect(() => {
+    if (isAutoSync && isListening) {
+      syncIntervalRef.current = window.setInterval(runLogicCycle, 20000);
+    } else {
+      if (syncIntervalRef.current) clearInterval(syncIntervalRef.current);
+    }
+    return () => { if (syncIntervalRef.current) clearInterval(syncIntervalRef.current); };
+  }, [isAutoSync, isListening, runLogicCycle]);
+
+  useImperativeHandle(ref, () => ({
+    remoteStart: () => {
+      if (!isListening && !isConnecting) startSession();
+    }
+  }));
 
   return (
-    <div className="flex flex-col h-full bg-background">
-      <div className="p-3 bg-white/5 border-b border-white/10 flex items-center justify-between">
+    <div className="flex flex-col h-full bg-[#121212]">
+      <div className="p-4 bg-white/[0.02] border-b border-white/5 flex items-center justify-between">
           <div className="flex items-center gap-3">
-              <div className={`w-2 h-2 rounded-full ${isListening ? 'bg-primary animate-pulse' : 'bg-gray-600'}`}></div>
-              <span className="text-[10px] font-mono uppercase tracking-widest text-gray-500">Moheb-Saeed Unit</span>
+              <div className={`w-3 h-3 rounded-full ${isListening ? 'bg-primary animate-ping shadow-[0_0_15px_#98C3D9]' : 'bg-gray-800'}`}></div>
+              <span className="text-[10px] font-black text-white uppercase tracking-widest">
+                {isListening ? 'Sonic Pulse: ACTIVE' : isConnecting ? 'Calibrating...' : 'Awaiting Input'}
+              </span>
           </div>
-          <div className="flex items-center gap-4">
-              {isMapConsulting && (
-                  <div className="flex items-center gap-2 px-3 py-1 bg-blue-500/10 rounded-full border border-blue-500/20 transition-all">
-                      <MapIcon className="w-3 h-3 text-blue-400 animate-pulse" />
-                      <span className="text-[10px] font-bold text-blue-400 uppercase tracking-tighter">Maps Sync</span>
-                  </div>
-              )}
+          <div className="flex gap-2">
               {isSyncing && (
-                  <div className="flex items-center gap-2 px-3 py-1 bg-primary/10 rounded-full border border-primary/20 transition-all">
-                      <BoltIcon className="w-3 h-3 text-primary animate-pulse" />
-                      <span className="text-[10px] font-bold text-primary uppercase tracking-tighter">Telemetry Sync</span>
-                  </div>
+                <div className="px-3 py-1 bg-primary/10 border border-primary/20 rounded-full flex items-center gap-2">
+                  <BoltIcon className="w-3 h-3 text-primary animate-pulse" />
+                  <span className="text-[8px] font-bold text-primary uppercase">Syncing</span>
+                </div>
               )}
           </div>
-      </div>
-
-      <div className="flex-grow p-4 space-y-4 overflow-y-auto">
-        {conversation.map((msg, index) => (
-          msg.sender !== 'system' && ( 
-            <div key={index} className={`flex items-end gap-2 ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
-                <div className={`max-w-[85%] px-4 py-2 rounded-2xl ${
-                msg.sender === 'user' ? 'bg-primary text-background font-medium rounded-br-none' :
-                'bg-white/10 text-gray-200 rounded-bl-none shadow-md shadow-black/10'
-                }`}>
-                <p className="whitespace-pre-wrap leading-relaxed">{msg.text}</p>
-                </div>
-            </div>
-          )
-        ))}
-        <div ref={conversationEndRef} />
       </div>
       
-      {error && <div className="mx-4 mb-4 p-2 text-center text-xs bg-red-900/40 text-red-200 rounded-md border border-red-500/20">{error}</div>}
+      <div className="flex-grow flex flex-col items-center justify-center p-12 text-center relative overflow-hidden">
+        {isListening && (
+           <div className="absolute inset-0 flex items-center justify-center opacity-20 pointer-events-none">
+              <div className="w-[500px] h-[500px] border border-primary/30 rounded-full animate-ping"></div>
+              <div className="absolute w-[300px] h-[300px] border border-primary/20 rounded-full animate-ping [animation-delay:0.5s]"></div>
+           </div>
+        )}
 
-      <div className="p-6 bg-background/50 border-t border-white/10">
-          <div className="text-center text-sm text-gray-500 mb-6 h-6 flex items-center justify-center">
-            <p className="italic font-light">
-              {isListening && liveTranscription ? liveTranscription : status}
-            </p>
-          </div>
-          <div className="flex justify-center items-center">
-            <button
-              onClick={toggleListening}
-              className={`relative group w-24 h-24 rounded-full flex items-center justify-center transition-all duration-500 ${
-                isListening ? 'bg-red-500 shadow-xl' : 'bg-primary shadow-xl'
-              }`}
+        {!isListening && !isConnecting ? (
+          <div className="relative z-10 space-y-8">
+            <div className="w-32 h-32 bg-primary/5 rounded-full flex items-center justify-center mx-auto border border-primary/10 group-hover:border-primary/40 transition-all">
+              <MicIcon className="w-12 h-12 text-primary/40" />
+            </div>
+            <div className="space-y-4">
+              <h3 className="text-3xl font-black text-white uppercase italic tracking-tighter">Initialize Link</h3>
+              <p className="text-xs text-gray-500 max-w-[250px] mx-auto uppercase font-bold tracking-widest leading-loose">Tap to activate high-gain neural audio stream</p>
+            </div>
+            <button 
+              onClick={startSession}
+              className="px-12 py-5 bg-primary text-black font-black rounded-full uppercase text-xs tracking-[0.3em] hover:scale-105 active:scale-95 transition-all shadow-[0_20px_40px_rgba(152,195,217,0.2)]"
             >
-              <div className={`absolute inset-0 rounded-full border-2 border-white/5 ${isListening ? 'animate-ping opacity-10' : ''}`}></div>
-              {isListening && !liveTranscription && status === 'Activating...' ? <LoaderIcon className="w-8 h-8 text-white"/> : <MicIcon className={`w-10 h-10 ${isListening ? 'text-white' : 'text-background'}`} />}
+              Wake Assistant
             </button>
           </div>
+        ) : (
+          <div className="relative z-10 space-y-6">
+            <div className="w-40 h-40 bg-background border-2 border-primary/20 rounded-full flex items-center justify-center mx-auto shadow-[0_0_80px_rgba(152,195,217,0.1)]">
+               <div className={`w-24 h-24 rounded-full border-4 border-primary border-t-transparent ${isListening ? 'animate-spin' : ''}`}></div>
+               <SparklesIcon className="absolute w-8 h-8 text-primary animate-pulse" />
+            </div>
+            <p className="text-[10px] font-black text-primary uppercase tracking-[0.5em] animate-pulse">
+              {isListening ? 'Listening for whispers...' : 'Establishing Secure Link'}
+            </p>
+          </div>
+        )}
+      </div>
+
+      <div className="p-10 border-t border-white/5 bg-white/[0.01] flex flex-col items-center">
+        <button 
+          onClick={isListening ? stopEverything : startSession} 
+          disabled={isConnecting}
+          className={`w-24 h-24 rounded-full flex items-center justify-center transition-all shadow-2xl ${
+            isListening ? 'bg-red-500/80 shadow-red-500/20 rotate-45' : 'bg-primary shadow-primary/20'
+          }`}
+        >
+          {isListening ? <BoltIcon className="w-10 h-10 text-white" /> : <MicIcon className="w-10 h-10 text-background" />}
+        </button>
+        <p className="mt-6 text-[9px] text-gray-600 font-black uppercase tracking-[0.5em]">
+          {isListening ? 'Kill Engine' : 'Audio Sync'}
+        </p>
       </div>
     </div>
   );
-};
+});
 
 export default LiveAssistant;
