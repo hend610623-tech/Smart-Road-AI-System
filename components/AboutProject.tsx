@@ -1,7 +1,7 @@
 
 import React from 'react';
 import { Tab } from '../App';
-import { SteeringWheelIcon, MapIcon, TextIcon, MicIcon, BoltIcon } from './Icons';
+import { SteeringWheelIcon, MapIcon, MicIcon } from './Icons';
 
 interface AboutProjectProps {
   onNavigate?: (tab: Tab) => void;
@@ -10,11 +10,10 @@ interface AboutProjectProps {
 const AboutProject: React.FC<AboutProjectProps> = ({ onNavigate }) => {
   return (
     <div className="flex flex-col h-full bg-background overflow-y-auto">
-      {/* Hero Section - Optimized for high reliability loading */}
+      {/* Hero Section */}
       <div 
         className="relative h-[55vh] min-h-[500px] w-full overflow-hidden bg-[#121212] flex-shrink-0"
       >
-        {/* Layer 0: Direct Source ID image from Unsplash (Verified high-stability ID) */}
         <img 
           src="https://images.unsplash.com/photo-1545143333-11bb2f7ef202?q=80&w=1920&auto=format&fit=crop" 
           alt="Smart Infrastructure" 
@@ -22,13 +21,11 @@ const AboutProject: React.FC<AboutProjectProps> = ({ onNavigate }) => {
           onLoad={(e) => (e.currentTarget.style.opacity = '1')}
         />
         
-        {/* Layer 1: CSS Fallback (Pexels) - only visible if img tag is transparent or fails */}
         <div 
            className="absolute inset-0 z-[-1] bg-cover bg-center opacity-40"
            style={{ backgroundImage: 'url("https://images.pexels.com/photos/315938/pexels-photo-315938.jpeg?auto=compress&cs=tinysrgb&w=1260")' }}
         />
 
-        {/* Layer 2: Complex Branding Overlays */}
         <div className="absolute inset-0 bg-gradient-to-t from-background via-background/40 to-transparent z-[1]" />
         
         <div className="relative z-10 h-full flex flex-col items-center justify-center text-center px-6">
@@ -69,41 +66,27 @@ const AboutProject: React.FC<AboutProjectProps> = ({ onNavigate }) => {
           </div>
         </section>
 
-        {/* Action Dashboard */}
+        {/* Action Dashboard - Cleaned to only show active modules */}
         <section className="pb-48">
             <div className="flex flex-col items-center mb-24 space-y-6">
-                <h4 className="text-[10px] font-black text-gray-500 uppercase tracking-[0.9em]">System Infrastructure</h4>
+                <h4 className="text-[10px] font-black text-gray-500 uppercase tracking-[0.9em]">Active Neural Modules</h4>
                 <div className="h-[2px] w-64 bg-gradient-to-r from-transparent via-primary/20 to-transparent"></div>
             </div>
             
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-12">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-12 max-w-5xl mx-auto">
                 <DashboardCard 
-                    title="Live Voice" 
-                    subtitle="Assistant" 
-                    description="Real-time route calculation & AI voice synthesis"
+                    title="Neural Drive" 
+                    subtitle="Live Voice" 
+                    description="Hyper-sensitive real-time audio interface for hands-free routing and system control."
                     icon={<MicIcon className="w-10 h-10" />} 
                     onClick={() => onNavigate?.('assistant')}
                 />
                 <DashboardCard 
-                    title="Telemetry" 
+                    title="Telemetry Hub" 
                     subtitle="Live Map" 
-                    description="Precise GPS & Sector Monitoring Hub"
+                    description="Dynamic sector monitoring with integrated GPS tracking and neural route projection."
                     icon={<MapIcon className="w-10 h-10" />} 
                     onClick={() => onNavigate?.('map')}
-                />
-                <DashboardCard 
-                    title="Cloud Logs" 
-                    subtitle="AI Orders" 
-                    description="ESP32 Instruction stream & binary logic"
-                    icon={<BoltIcon className="w-10 h-10" />} 
-                    onClick={() => onNavigate?.('orders')}
-                />
-                <DashboardCard 
-                    title="Logic Lab" 
-                    subtitle="AI Studio" 
-                    description="Custom prompt engineering & sandbox environment"
-                    icon={<TextIcon className="w-10 h-10" />} 
-                    onClick={() => onNavigate?.('generator')}
                 />
             </div>
         </section>
